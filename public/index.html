@@ -27,6 +27,9 @@
 <textarea id="input" placeholder="Paste URLs here, one or many per line..."></textarea>
 <div id="detected"></div>
 <button id="sendBtn">Send</button>
+<label style="margin-left: 14px; font-size: 0.9rem; color: #ccc; user-select: none;">
+  <input type="checkbox" id="hideBlocked"> Hide blocked links
+</label>
 
 <table id="results" style="display:none">
   <thead>
@@ -41,6 +44,7 @@ const detected = document.getElementById("detected");
 const sendBtn = document.getElementById("sendBtn");
 const resultsTable = document.getElementById("results");
 const resultsBody = document.getElementById("resultsBody");
+const hideBlocked = document.getElementById("hideBlocked");
 
 const URL_REGEX = /((?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[\/?#][^\s]*)?)/gi;
 
@@ -77,18 +81,39 @@ sendBtn.addEventListener("click", async () => {
     try {
       const res = await fetch(`/api/check?domain=${encodeURIComponent(domain)}`);
       const data = await res.json();
+      const blocked = isBlocked(data.linewize);
+      row.dataset.blocked = blocked;
       row.innerHTML = `
         <td>${domain}</td>
         <td>${formatResult(data.linewize)}</td>
       `;
     } catch (err) {
+      row.dataset.blocked = "false";
       row.innerHTML = `<td>${domain}</td><td class="error">error</td>`;
     }
+
+    applyFilter();
   }
 
   sendBtn.disabled = false;
   sendBtn.textContent = "Send";
 });
+
+function isBlocked(result) {
+  if (Array.isArray(result)) return !!result[1];
+  if (result && typeof result === "object") return !!result.blocked;
+  return false;
+}
+
+function applyFilter() {
+  const rows = resultsBody.querySelectorAll("tr");
+  rows.forEach(row => {
+    const blocked = row.dataset.blocked === "true";
+    row.style.display = (hideBlocked.checked && blocked) ? "none" : "";
+  });
+}
+
+hideBlocked.addEventListener("change", applyFilter);
 
 function formatResult(result) {
   let label, blocked;
