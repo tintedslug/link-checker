@@ -17,6 +17,8 @@
   .blocked { color: #ff5c5c; font-weight: 600; }
   .allowed { color: #5cff8a; font-weight: 600; }
   .error { color: #999; font-style: italic; }
+  .broken { color: #ffb347; font-weight: 600; }
+  .working { color: #5cff8a; }
 </style>
 </head>
 <body>
@@ -30,10 +32,14 @@
 <label style="margin-left: 14px; font-size: 0.9rem; color: #ccc; user-select: none;">
   <input type="checkbox" id="hideBlocked"> Hide blocked links
 </label>
+<label style="margin-left: 14px; font-size: 0.9rem; color: #ccc; user-select: none;">
+  <input type="checkbox" id="hideBroken" checked> Hide broken links
+</label>
+<div id="summary" style="font-size:0.85rem;color:#999;margin-top:8px;"></div>
 
 <table id="results" style="display:none">
   <thead>
-    <tr><th>Domain</th><th>Linewize</th></tr>
+    <tr><th>Domain</th><th>Linewize</th><th>Site status</th></tr>
   </thead>
   <tbody id="resultsBody"></tbody>
 </table>
@@ -45,6 +51,13 @@ const sendBtn = document.getElementById("sendBtn");
 const resultsTable = document.getElementById("results");
 const resultsBody = document.getElementById("resultsBody");
 const hideBlocked = document.getElementById("hideBlocked");
+const hideBroken = document.getElementById("hideBroken");
+const summary = document.getElementById("summary");
+const CONCURRENCY = 4;
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
 
 const URL_REGEX = /((?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:[\/?#][^\s]*)?)/gi;
 
@@ -73,27 +86,41 @@ sendBtn.addEventListener("click", async () => {
   resultsBody.innerHTML = "";
   resultsTable.style.display = "table";
 
-  for (const domain of domains) {
+  // create all rows up front so order stays stable, then check a few at a time
+  const jobs = domains.map(domain => {
     const row = document.createElement("tr");
-    row.innerHTML = `<td>${domain}</td><td>...</td>`;
+    row.dataset.blocked = "false";
+    row.dataset.broken = "false";
+    row.innerHTML = `<td>${esc(domain)}</td><td>...</td><td>...</td>`;
     resultsBody.appendChild(row);
+    return { domain, row };
+  });
 
-    try {
-      const res = await fetch(`/api/check?domain=${encodeURIComponent(domain)}`);
-      const data = await res.json();
-      const blocked = isBlocked(data.linewize);
-      row.dataset.blocked = blocked;
-      row.innerHTML = `
-        <td>${domain}</td>
-        <td>${formatResult(data.linewize)}</td>
-      `;
-    } catch (err) {
-      row.dataset.blocked = "false";
-      row.innerHTML = `<td>${domain}</td><td class="error">error</td>`;
+  let next = 0;
+  async function worker() {
+    while (next < jobs.length) {
+      const { domain, row } = jobs[next++];
+      try {
+        const res = await fetch(`/api/check?domain=${encodeURIComponent(domain)}`);
+        const data = await res.json();
+        const blocked = isBlocked(data.linewize);
+        const broken = !!(data.probe && data.probe.broken);
+        row.dataset.blocked = blocked;
+        row.dataset.broken = broken;
+        row.innerHTML = `
+          <td>${esc(domain)}</td>
+          <td>${formatResult(data.linewize)}</td>
+          <td>${formatProbe(data.probe)}</td>
+        `;
+      } catch (err) {
+        // the check request itself failed -> treat as broken/unknown
+        row.dataset.broken = "true";
+        row.innerHTML = `<td>${esc(domain)}</td><td class="error">error</td><td class="broken">Check failed</td>`;
+      }
+      applyFilter();
     }
-
-    applyFilter();
   }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, jobs.length) }, worker));
 
   sendBtn.disabled = false;
   sendBtn.textContent = "Send";
@@ -109,11 +136,24 @@ function applyFilter() {
   const rows = resultsBody.querySelectorAll("tr");
   rows.forEach(row => {
     const blocked = row.dataset.blocked === "true";
-    row.style.display = (hideBlocked.checked && blocked) ? "none" : "";
+    const broken = row.dataset.broken === "true";
+    row.style.display = ((hideBlocked.checked && blocked) || (hideBroken.checked && broken)) ? "none" : "";
   });
+  const total = rows.length;
+  const brokenCount = [...rows].filter(r => r.dataset.broken === "true").length;
+  const shown = [...rows].filter(r => r.style.display !== "none").length;
+  summary.textContent = total ? `Showing ${shown} of ${total} · ${brokenCount} broken` : "";
 }
 
 hideBlocked.addEventListener("change", applyFilter);
+hideBroken.addEventListener("change", applyFilter);
+
+function formatProbe(p) {
+  if (!p) return `<span class="error">unknown</span>`;
+  if (p.broken) return `<span class="broken">Broken: ${esc(p.reason)}</span>`;
+  if (p.probeFailed) return `<span class="error">${esc(p.reason)}</span>`;
+  return `<span class="working">Working</span>`;
+}
 
 function formatResult(result) {
   let label, blocked;
