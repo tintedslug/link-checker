@@ -1,6 +1,7 @@
 const express = require("express");
 const path = require("path");
 const { linewize } = require("./lib/linewize.js");
+const { probe, closeBrowser } = require("./lib/probe.js");
 
 const app = express();
 
@@ -12,12 +13,19 @@ app.get("/api/check", async (req, res) => {
 		return res.status(400).json({ error: "missing domain" });
 	}
 
-	const lw = await linewize(domain);
+	// Linewize lookup and the headless-browser liveness probe run in parallel.
+	// The probe runs on the server, not in the visitor's browser.
+	const [lw, pr] = await Promise.all([
+		linewize(domain),
+		probe(domain).catch((e) => ({ broken: true, reason: String(e.message || e) }))
+	]);
 
-	res.json({ domain, linewize: lw });
+	res.json({ domain, linewize: lw, probe: pr });
 });
 
 const PORT = 3000;
 app.listen(PORT, () => {
 	console.log(`Running at http://localhost:${PORT}`);
 });
+
+process.on("SIGINT", async () => { await closeBrowser(); process.exit(0); });
